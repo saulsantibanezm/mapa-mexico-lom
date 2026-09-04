@@ -167,3 +167,46 @@ async def info():
         "total_municipios": n_municipios,
         "municipios_por_estado": [row_to_dict(r) for r in por_estado]
     }
+
+
+# ── API: Indicadores LOM ──────────────────────
+
+INDICADORES_VALIDOS = {"total_hablantes", "num_lom_distintas", "familia_dominante"}
+
+
+@app.get("/api/indicadores/{municipio_id}")
+async def get_indicadores(municipio_id: int):
+    """Devuelve los 3 indicadores de lenguas indígenas para un municipio."""
+    with get_conn() as conn:
+        row = conn.execute(
+            """SELECT m.nombre, e.nombre AS estado,
+                      i.total_hablantes, i.num_lom_distintas, i.familia_dominante
+               FROM indicadores_lom i
+               JOIN municipios m ON m.id = i.municipio_id
+               JOIN estados e ON e.id = m.estado_id
+               WHERE i.municipio_id = ?""",
+            (municipio_id,)
+        ).fetchone()
+    if not row:
+        return {"sin_datos": True, "municipio_id": municipio_id}
+    return row_to_dict(row)
+
+
+@app.get("/api/mapa/{indicador}")
+async def get_mapa_indicador(indicador: str):
+    """
+    Devuelve todos los municipios con su valor para el indicador solicitado.
+    indicador: total_hablantes | num_lom_distintas | familia_dominante
+    """
+    if indicador not in INDICADORES_VALIDOS:
+        return {"error": f"Indicador inválido. Opciones: {sorted(INDICADORES_VALIDOS)}"}
+
+    with get_conn() as conn:
+        rows = conn.execute(
+            f"""SELECT m.id, m.nombre, m.lat, m.lon,
+                       e.nombre AS estado, i.{indicador} AS valor
+                FROM indicadores_lom i
+                JOIN municipios m ON m.id = i.municipio_id
+                JOIN estados e ON e.id = m.estado_id""",
+        ).fetchall()
+    return [row_to_dict(r) for r in rows]

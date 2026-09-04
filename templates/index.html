@@ -586,6 +586,25 @@
 
   </div><!-- /controls -->
 
+
+  <!-- ─ Selector de indicador LOM ─ -->
+  <div id="lom-controls" style="padding:12px 16px;border-top:1px solid var(--border,#e5e7eb)">
+    <div class="field-label">🗣 Ver en el mapa</div>
+    <div class="select-wrap" style="margin-top:6px">
+      <select id="sel-indicador" onchange="cargarCapaLOM(this.value)">
+        <option value="">— Sin capa de lenguas —</option>
+        <option value="total_hablantes">Total de hablantes</option>
+        <option value="num_lom_distintas">Número de lenguas distintas</option>
+        <option value="familia_dominante">Familia lingüística dominante</option>
+      </select>
+      <span class="select-arrow">
+        <svg width="12" height="8" viewBox="0 0 12 8">
+          <path fill="currentColor" d="M6 8L0 0h12z"/>
+        </svg>
+      </span>
+    </div>
+  </div>
+
   <!-- Lista de marcadores -->
   <div id="markers-wrap">
     <div id="markers-header">
@@ -598,6 +617,30 @@
   </div>
 
 </div><!-- /sidebar -->
+
+
+<!-- ══════════════════ TABLA LOM ══════════════════ -->
+<div id="tabla-lom-wrap" style="display:none;position:fixed;bottom:0;left:380px;right:0;
+     background:#fff;border-top:2px solid #1e88e5;z-index:1000;max-height:220px;overflow-y:auto">
+  <div style="display:flex;align-items:center;justify-content:space-between;
+              padding:8px 16px;background:#1e88e5;color:#fff">
+    <strong>Municipios seleccionados — lenguas indígenas</strong>
+    <button onclick="document.getElementById('tabla-lom-wrap').style.display='none'"
+            style="background:none;border:none;color:#fff;font-size:18px;cursor:pointer">✕</button>
+  </div>
+  <table id="tabla-lom" style="width:100%;border-collapse:collapse;font-size:13px">
+    <thead style="background:#f3f4f6;position:sticky;top:0">
+      <tr>
+        <th style="padding:6px 12px;text-align:left">Municipio</th>
+        <th style="padding:6px 12px;text-align:left">Estado</th>
+        <th style="padding:6px 12px;text-align:right">Hablantes</th>
+        <th style="padding:6px 12px;text-align:right"># Lenguas</th>
+        <th style="padding:6px 12px;text-align:left">Familia dominante</th>
+      </tr>
+    </thead>
+    <tbody id="tabla-lom-body"></tbody>
+  </table>
+</div>
 
 <!-- ══════════════════ MAPA ══════════════════ -->
 <div id="map"></div>
@@ -957,6 +1000,82 @@ map.on('click', e => {
 ══════════════════════════════════════════ */
 cargarEstados();
 renderLista();
+
+/* ══════════════════════════════════════════
+   CAPA LOM – Indicadores de lenguas indígenas
+══════════════════════════════════════════ */
+
+const FAMILIAS_COLOR = {
+  'Maya':              '#2e7d32',
+  'Yuto-nahua':        '#1565c0',
+  'Oto-mangue':        '#6a1b9a',
+  'Mixe-zoque':        '#e65100',
+  'Totonaco-tepehua':  '#ad1457',
+  'Álgica':            '#00838f',
+  'Cochimí-yumana':    '#558b2f',
+  'Seri':              '#4527a0',
+  'Tarasca':           '#f9a825',
+  'Chontal-oaxaca':    '#4e342e',
+  'Huave':             '#00695c',
+  'Otras / no especificado': '#757575',
+};
+
+let capaLOM = null;
+const municipiosEnTabla = new Set();
+
+function colorPorValor(indicador, valor) {
+  if (indicador === 'familia_dominante') {
+    return FAMILIAS_COLOR[valor] || '#9e9e9e';
+  }
+  const n = Number(valor) || 0;
+  if (n === 0)      return '#e0e0e0';
+  if (n < 500)      return '#c8e6c9';
+  if (n < 2000)     return '#81c784';
+  if (n < 10000)    return '#388e3c';
+  if (n < 50000)    return '#1b5e20';
+  return '#003300';
+}
+
+async function cargarCapaLOM(indicador) {
+  if (capaLOM) { map.removeLayer(capaLOM); capaLOM = null; }
+  if (!indicador) return;
+
+  const datos = await fetch('/api/mapa/' + indicador).then(r => r.json());
+  const marcadores = datos.map(d => {
+    const color = colorPorValor(indicador, d.valor);
+    const radio = indicador === 'familia_dominante' ? 5
+                : Math.max(3, Math.min(14, Math.log10((Number(d.valor)||0) + 1) * 3));
+    const m = L.circleMarker([d.lat, d.lon], {
+      radius: radio, color: color, fillColor: color,
+      fillOpacity: 0.75, weight: 0.5
+    });
+    m.bindTooltip(`<b>${d.nombre}</b><br>${d.estado}<br>${indicador === 'familia_dominante' ? d.valor : Number(d.valor).toLocaleString()}`);
+    m.on('click', () => agregarATablaLOM(d.id));
+    return m;
+  });
+  capaLOM = L.layerGroup(marcadores).addTo(map);
+}
+
+async function agregarATablaLOM(municipioId) {
+  if (municipiosEnTabla.has(municipioId)) return;
+  const info = await fetch('/api/indicadores/' + municipioId).then(r => r.json());
+  if (info.sin_datos) return;
+
+  municipiosEnTabla.add(municipioId);
+  const tbody = document.getElementById('tabla-lom-body');
+  const tr = document.createElement('tr');
+  tr.style.borderTop = '1px solid #e5e7eb';
+  tr.innerHTML = `
+    <td style="padding:6px 12px">${info.nombre}</td>
+    <td style="padding:6px 12px">${info.estado}</td>
+    <td style="padding:6px 12px;text-align:right">${Number(info.total_hablantes).toLocaleString()}</td>
+    <td style="padding:6px 12px;text-align:right">${info.num_lom_distintas}</td>
+    <td style="padding:6px 12px">${info.familia_dominante || '—'}</td>`;
+  tbody.appendChild(tr);
+  document.getElementById('tabla-lom-wrap').style.display = 'block';
+}
+
+
 </script>
 </body>
 </html>
