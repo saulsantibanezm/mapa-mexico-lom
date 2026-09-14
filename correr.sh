@@ -1,0 +1,5 @@
+#!/bin/bash
+echo "Iniciando Mapa de Mexico - Lenguas Indigenas..."
+source venv/bin/activate
+python processing/cargar_indicadores.py
+python -m uvicorn main:app --reload

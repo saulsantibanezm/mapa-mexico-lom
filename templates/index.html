@@ -605,6 +605,32 @@
     </div>
   </div>
 
+  <!-- ─ Instrucción de clic ─ -->
+  <div id="lom-instruccion" style="display:none;padding:8px 16px;font-size:12px;color:#0369a1;background:#f0f9ff;border-top:1px solid #bae6fd">
+    👆 Haz clic en un círculo del mapa para ver sus datos
+  </div>
+  <!-- ─ Municipios seleccionados en sidebar ─ -->
+  <div id="lom-sidebar-wrap" style="display:none;border-top:1px solid #e5e7eb">
+    <div style="padding:8px 16px;background:#f8fafc;display:flex;justify-content:space-between;align-items:center">
+      <span style="font-size:11px;font-weight:600;color:#475569;text-transform:uppercase">🗣 Municipios seleccionados</span>
+      <button onclick="limpiarTablaLOM()" style="font-size:11px;color:#94a3b8;background:none;border:none;cursor:pointer">✕ Limpiar</button>
+    </div>
+    <div id="lom-sidebar-body" style="max-height:280px;overflow-y:auto"></div>
+  </div>
+
+  <!-- ─ Instrucción de clic ─ -->
+  <div id="lom-instruccion" style="display:none;padding:8px 16px;font-size:12px;color:#0369a1;background:#f0f9ff;border-top:1px solid #bae6fd">
+    👆 Haz clic en un círculo del mapa para ver sus datos
+  </div>
+  <!-- ─ Municipios seleccionados en sidebar ─ -->
+  <div id="lom-sidebar-wrap" style="display:none;border-top:1px solid #e5e7eb">
+    <div style="padding:8px 16px;background:#f8fafc;display:flex;justify-content:space-between;align-items:center">
+      <span style="font-size:11px;font-weight:600;color:#475569;text-transform:uppercase">🗣 Municipios seleccionados</span>
+      <button onclick="limpiarTablaLOM()" style="font-size:11px;color:#94a3b8;background:none;border:none;cursor:pointer">✕ Limpiar</button>
+    </div>
+    <div id="lom-sidebar-body" style="max-height:280px;overflow-y:auto"></div>
+  </div>
+
   <!-- Lista de marcadores -->
   <div id="markers-wrap">
     <div id="markers-header">
@@ -618,29 +644,6 @@
 
 </div><!-- /sidebar -->
 
-
-<!-- ══════════════════ TABLA LOM ══════════════════ -->
-<div id="tabla-lom-wrap" style="display:none;position:fixed;bottom:0;left:380px;right:0;
-     background:#fff;border-top:2px solid #1e88e5;z-index:1000;max-height:220px;overflow-y:auto">
-  <div style="display:flex;align-items:center;justify-content:space-between;
-              padding:8px 16px;background:#1e88e5;color:#fff">
-    <strong>Municipios seleccionados — lenguas indígenas</strong>
-    <button onclick="document.getElementById('tabla-lom-wrap').style.display='none'"
-            style="background:none;border:none;color:#fff;font-size:18px;cursor:pointer">✕</button>
-  </div>
-  <table id="tabla-lom" style="width:100%;border-collapse:collapse;font-size:13px">
-    <thead style="background:#f3f4f6;position:sticky;top:0">
-      <tr>
-        <th style="padding:6px 12px;text-align:left">Municipio</th>
-        <th style="padding:6px 12px;text-align:left">Estado</th>
-        <th style="padding:6px 12px;text-align:right">Hablantes</th>
-        <th style="padding:6px 12px;text-align:right"># Lenguas</th>
-        <th style="padding:6px 12px;text-align:left">Familia dominante</th>
-      </tr>
-    </thead>
-    <tbody id="tabla-lom-body"></tbody>
-  </table>
-</div>
 
 <!-- ══════════════════ MAPA ══════════════════ -->
 <div id="map"></div>
@@ -658,7 +661,7 @@ const map = L.map('map', { zoomControl: false })
 L.control.zoom({ position: 'topright' }).addTo(map);
 
 // Tile layer limpio (tipo Google Maps)
-L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
   attribution: '© <a href="https://www.openstreetmap.org/">OpenStreetMap</a> © <a href="https://carto.com/">CARTO</a>',
   maxZoom: 19
 }).addTo(map);
@@ -988,12 +991,7 @@ function irA(key) {
 /* ══════════════════════════════════════════
    CLICK EN EL MAPA – mostrar coordenadas
 ══════════════════════════════════════════ */
-map.on('click', e => {
-  L.popup({ className: 'coords-popup' })
-   .setLatLng(e.latlng)
-   .setContent(`📍 ${e.latlng.lat.toFixed(6)}, ${e.latlng.lng.toFixed(6)}`)
-   .openOn(map);
-});
+
 
 /* ══════════════════════════════════════════
    INIT
@@ -1028,17 +1026,30 @@ function colorPorValor(indicador, valor) {
     return FAMILIAS_COLOR[valor] || '#9e9e9e';
   }
   const n = Number(valor) || 0;
-  if (n === 0)      return '#e0e0e0';
-  if (n < 500)      return '#c8e6c9';
-  if (n < 2000)     return '#81c784';
-  if (n < 10000)    return '#388e3c';
-  if (n < 50000)    return '#1b5e20';
-  return '#003300';
+  if (indicador === 'total_hablantes') {
+    if (n === 0)       return '#f5f5f5';
+    if (n < 500)       return '#fde68a';
+    if (n < 2000)      return '#f97316';
+    if (n < 10000)     return '#dc2626';
+    if (n < 50000)     return '#991b1b';
+    return '#450a0a';
+  }
+  if (indicador === 'num_lom_distintas') {
+    if (n === 0)       return '#f5f5f5';
+    if (n <= 3)        return '#bae6fd';
+    if (n <= 8)        return '#38bdf8';
+    if (n <= 15)       return '#0284c7';
+    if (n <= 25)       return '#075985';
+    return '#0c4a6e';
+  }
+  return '#e0e0e0';
 }
 
 async function cargarCapaLOM(indicador) {
   if (capaLOM) { map.removeLayer(capaLOM); capaLOM = null; }
-  if (!indicador) return;
+  const instr = document.getElementById('lom-instruccion');
+  if (!indicador) { if (instr) instr.style.display = 'none'; return; }
+  if (instr) instr.style.display = 'block';
 
   const datos = await fetch('/api/mapa/' + indicador).then(r => r.json());
   const marcadores = datos.map(d => {
@@ -1060,19 +1071,33 @@ async function agregarATablaLOM(municipioId) {
   if (municipiosEnTabla.has(municipioId)) return;
   const info = await fetch('/api/indicadores/' + municipioId).then(r => r.json());
   if (info.sin_datos) return;
-
   municipiosEnTabla.add(municipioId);
-  const tbody = document.getElementById('tabla-lom-body');
-  const tr = document.createElement('tr');
-  tr.style.borderTop = '1px solid #e5e7eb';
-  tr.innerHTML = `
-    <td style="padding:6px 12px">${info.nombre}</td>
-    <td style="padding:6px 12px">${info.estado}</td>
-    <td style="padding:6px 12px;text-align:right">${Number(info.total_hablantes).toLocaleString()}</td>
-    <td style="padding:6px 12px;text-align:right">${info.num_lom_distintas}</td>
-    <td style="padding:6px 12px">${info.familia_dominante || '—'}</td>`;
-  tbody.appendChild(tr);
-  document.getElementById('tabla-lom-wrap').style.display = 'block';
+  const body = document.getElementById('lom-sidebar-body');
+  const div = document.createElement('div');
+  div.style.cssText = 'padding:10px 16px;border-top:1px solid #e5e7eb;font-size:13px';
+  div.innerHTML = `
+    <div style="font-weight:600;color:#1e293b">${info.nombre}</div>
+    <div style="color:#64748b;font-size:12px;margin-bottom:4px">${info.estado}</div>
+    <div style="display:flex;gap:12px;flex-wrap:wrap;font-size:12px">
+      <span>👥 <b>${Number(info.total_hablantes).toLocaleString()}</b> hablantes</span>
+      <span>🔤 <b>${info.num_lom_distintas}</b> lenguas</span>
+      <span>🏷 ${info.familia_dominante || '—'}</span>
+    </div>`;
+  body.appendChild(div);
+  body.scrollTop = body.scrollHeight;
+  document.getElementById('lom-sidebar-wrap').style.display = 'block';
+}
+
+function limpiarTablaLOM() {
+  municipiosEnTabla.clear();
+  document.getElementById('lom-sidebar-body').innerHTML = '';
+  document.getElementById('lom-sidebar-wrap').style.display = 'none';
+}
+
+function limpiarTablaLOM() {
+  municipiosEnTabla.clear();
+  document.getElementById('lom-sidebar-body').innerHTML = '';
+  document.getElementById('lom-sidebar-wrap').style.display = 'none';
 }
 
 
