@@ -1,21 +1,45 @@
-# Mapa de México 🇲🇽
+# Mapa de Mexico - Indicadores de Lenguas Indigenas
 
-Aplicación web interactiva para visualizar y explorar los 32 estados y más de 2,400 municipios de México en un mapa.
+Aplicacion web interactiva que visualiza indicadores de lenguas indigenas
+a nivel municipal, derivados del Censo de Poblacion y Vivienda 2020 del INEGI.
 
-## Características
+## Funcionalidades
+- Mapa interactivo con 3 capas de indicadores por municipio
+- Total de hablantes de lengua indigena
+- Numero de lenguas distintas por municipio
+- Familia linguistica dominante por municipio
+- Panel lateral con datos de municipios seleccionados
+- Busqueda por estado y municipio
 
-- 🗺️ Mapa interactivo con Folium
-- 🔍 Búsqueda directa de estados y municipios
-- 📍 Marcadores con coordenadas precisas
-- 🏛️ Selección por estado y municipio
-- 📱 Diseño responsivo
+## Requisitos
+- Python 3.10 o superior
+- Conexion a internet para instalar dependencias (solo primera vez)
 
-## Instalación y ejecución
+## Instrucciones - Linux y Mac
+Primera vez:
+  chmod +x instalar.sh
+  ./instalar.sh
 
-```bash
-git clone https://github.com/saulsantibanezm/mapa-mexico.git
-cd mapa-mexico
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-python -m uvicorn main:app --reload
+Siguientes veces:
+  chmod +x correr.sh
+  ./correr.sh
+
+## Instrucciones - Windows
+Primera vez: doble clic en instalar.bat
+Siguientes veces: doble clic en correr.bat
+
+## Fuente de datos
+- Coordenadas geograficas: elaboracion propia
+- Indicadores de lenguas indigenas: Censo 2020, INEGI
+  Variable HLENGUA: habla lengua indigena
+  Variable QDIALECT_INALI: clasificacion INALI
+
+## Tecnologias
+- Backend: Python, FastAPI, SQLite
+- Frontend: HTML5, CSS3, JavaScript, Leaflet.js
+- Procesamiento: pandas
+
+## Autor
+Saul Santibañez Molina
+Servicio Social IIMAS, UNAM 2026
+Supervisor: Dr. Ivan Vladimir Meza Ruiz
