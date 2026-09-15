@@ -63,31 +63,37 @@ chmod +x instalar.sh
 **Windows:** doble clic en `instalar.bat`
 
 ## Estructura del proyecto
+
+```
 mapa-mexico-lom/
-├── main.py # Backend FastAPI (7 endpoints)
-├── create_db.py # Genera la base de datos desde CSV
-├── requirements.txt # Dependencias Python
-├── coordenadas_municipios.csv # Datos geográficos de municipios
-├── municipios.db # Base de datos SQLite
+├── main.py                          # Backend FastAPI (7 endpoints)
+├── create_db.py                     # Genera la base de datos desde CSV
+├── requirements.txt                 # Dependencias Python
+├── coordenadas_municipios.csv       # Datos geográficos de municipios
+├── municipios.db                    # Base de datos SQLite
 ├── processing/
-│ ├── censo_lengua_indigena.py # ETL: procesa microdatos del Censo 2020
-│ └── cargar_indicadores.py # Carga indicadores a la base de datos
+│   ├── censo_lengua_indigena.py     # ETL: procesa microdatos del Censo 2020
+│   └── cargar_indicadores.py        # Carga indicadores a la base de datos
 ├── data/
-│ └── processed/
-│ └── indicadores_lom.csv # Indicadores agregados por municipio
+│   └── processed/
+│       └── indicadores_lom.csv      # Indicadores agregados por municipio
 └── templates/
-└── index.html # Interfaz web completa
+    └── index.html                   # Interfaz web completa
+```
 
 ## Pipeline de datos
+
+```
 Censo INEGI 2020 (15M registros)
-↓
+        ↓
 censo_lengua_indigena.py
-↓
+        ↓
 indicadores_lom.csv (2,412 municipios)
-↓
+        ↓
 cargar_indicadores.py
-↓
+        ↓
 municipios.db → API REST → Mapa interactivo
+```
 
 ## Fuente de datos
 
