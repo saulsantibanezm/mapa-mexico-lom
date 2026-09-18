@@ -1,0 +1,1454 @@
+==========================================
+=== 1. ESTRUCTURA DE LA RAMA ===
+==========================================
+.gitignore
+Lista de estados y municipios con coordenadas.xlsx
+README.md
+coordenadas_municipios.csv
+create_db.py
+main.py
+municipios.db
+processing/cargar_indicadores.py
+processing/censo_lengua_indigena.py
+requirements.txt
+templates/index.html
+
+==========================================
+=== 2. COMMITS DE LA RAMA ===
+==========================================
+53b38c1 feat: integrar indicadores de lenguas indígenas (Censo INEGI 2020)
+f36fe6c Limpieza: eliminar columna poblacion y dependencias obsoletas
+e8d7f59 Agregar archivo Excel con coordenadas
+def60fb Eliminar archivos temporales de SQLite
+a03a016 Actualiza backend a API JSON, corrige coordenadas y bug de maxZoom
+8774224 Limpiar archivos temporales y actualizar .gitignore
+30dee29 Versión 1.0: Mapa interactivo de México
+
+==========================================
+=== 3. DIFF ESTADÍSTICO ===
+==========================================
+ main.py                             |  43 +++++++++++++
+ processing/cargar_indicadores.py    |  66 ++++++++++++++++++++
+ processing/censo_lengua_indigena.py | 106 ++++++++++++++++++++++++++++++++
+ templates/index.html                | 119 ++++++++++++++++++++++++++++++++++++
+ 4 files changed, 334 insertions(+)
+
+==========================================
+=== 4. MAIN.PY (rama feature/indicadores-lom) ===
+==========================================
+"""
+main.py – Backend del Mapa de México
+--------------------------------------
+Ejecutar:  uvicorn main:app --reload
+Requiere:  pip install fastapi uvicorn jinja2
+
+La aplicación lee TODO desde municipios.db.
+Para actualizar datos, sólo modifica el CSV y vuelve a ejecutar create_db.py.
+"""
+
+import sqlite3
+import os
+from typing import Optional
+
+from fastapi import FastAPI, Request, Query
+from fastapi.responses import HTMLResponse
+from fastapi.templating import Jinja2Templates
+
+# ──────────────────────────────────────────────
+DB_PATH = os.path.join(os.path.dirname(__file__), "municipios.db")
+# ──────────────────────────────────────────────
+
+app = FastAPI(title="Mapa de México", version="2.0")
+templates = Jinja2Templates(directory=os.path.join(os.path.dirname(__file__), "templates"))
+
+
+# ── Helpers ───────────────────────────────────
+
+def get_conn() -> sqlite3.Connection:
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def row_to_dict(row: sqlite3.Row) -> dict:
+    return dict(row)
+
+
+# ── Página principal ─────────────────────────
+
+@app.get("/", response_class=HTMLResponse)
+async def index(request: Request):
+    return templates.TemplateResponse("index.html", {"request": request})
+
+
+# ── API: Estados ──────────────────────────────
+
+@app.get("/api/estados")
+async def get_estados():
+    """Devuelve todos los estados ordenados alfabéticamente."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT id, nombre, lat, lon FROM estados ORDER BY nombre"
+        ).fetchall()
+    return [row_to_dict(r) for r in rows]
+
+
+@app.get("/api/estados/{estado_id}")
+async def get_estado(estado_id: int):
+    """Devuelve un estado por su id."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT id, nombre, lat, lon FROM estados WHERE id = ?", (estado_id,)
+        ).fetchone()
+    if not row:
+        return {"error": "Estado no encontrado"}
+    return row_to_dict(row)
+
+
+# ── API: Municipios ───────────────────────────
+
+@app.get("/api/municipios/{estado_id}")
+async def get_municipios(estado_id: int):
+    """Devuelve todos los municipios de un estado, ordenados alfabéticamente."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT id, clave_municipio, nombre, lat, lon
+               FROM municipios
+               WHERE estado_id = ?
+               ORDER BY nombre""",
+            (estado_id,)
+        ).fetchall()
+    return [row_to_dict(r) for r in rows]
+
+
+@app.get("/api/municipios/detalle/{municipio_id}")
+async def get_municipio(municipio_id: int):
+    """Devuelve un municipio por su id, incluyendo el nombre del estado."""
+    with get_conn() as conn:
+        row = conn.execute(
+            """SELECT m.id, m.clave_municipio, m.nombre, m.lat, m.lon,
+                      e.id AS estado_id, e.nombre AS estado_nombre
+               FROM municipios m
+               JOIN estados e ON e.id = m.estado_id
+               WHERE m.id = ?""",
+            (municipio_id,)
+        ).fetchone()
+    if not row:
+        return {"error": "Municipio no encontrado"}
+    return row_to_dict(row)
+
+
+# ── API: Búsqueda con autocompletado ──────────
+
+@app.get("/api/buscar")
+async def buscar(
+    q: str = Query("", min_length=0),
+    limite: int = Query(20, ge=1, le=50)
+):
+    """
+    Busca estados y municipios por nombre (LIKE).
+    Devuelve hasta `limite` resultados combinados:
+      - primero estados que coincidan
+      - luego municipios que coincidan
+    """
+    if len(q.strip()) < 2:
+        return []
+
+    term = f"%{q.strip()}%"
+    resultados = []
+
+    with get_conn() as conn:
+        # Buscar en estados
+        estados = conn.execute(
+            """SELECT id, nombre, lat, lon,
+                      'estado' AS tipo, 'Estado' AS subtitulo
+               FROM estados
+               WHERE nombre LIKE ? COLLATE NOCASE
+               LIMIT 5""",
+            (term,)
+        ).fetchall()
+        resultados.extend([row_to_dict(r) for r in estados])
+
+        # Buscar en municipios
+        municipios = conn.execute(
+            """SELECT m.id, m.nombre, m.lat, m.lon,
+                      'municipio' AS tipo, e.nombre AS subtitulo
+               FROM municipios m
+               JOIN estados e ON e.id = m.estado_id
+               WHERE m.nombre LIKE ? COLLATE NOCASE
+               ORDER BY m.nombre
+               LIMIT ?""",
+            (term, limite)
+        ).fetchall()
+        resultados.extend([row_to_dict(r) for r in municipios])
+
+    return resultados
+
+
+# ── API: Info de la base de datos ─────────────
+
+@app.get("/api/info")
+async def info():
+    """Estadísticas de la base de datos."""
+    with get_conn() as conn:
+        n_estados   = conn.execute("SELECT COUNT(*) FROM estados").fetchone()[0]
+        n_municipios = conn.execute("SELECT COUNT(*) FROM municipios").fetchone()[0]
+        por_estado  = conn.execute(
+            """SELECT e.nombre, COUNT(m.id) AS total
+               FROM estados e
+               LEFT JOIN municipios m ON m.estado_id = e.id
+               GROUP BY e.id
+               ORDER BY total DESC"""
+        ).fetchall()
+    return {
+        "total_estados": n_estados,
+        "total_municipios": n_municipios,
+        "municipios_por_estado": [row_to_dict(r) for r in por_estado]
+    }
+
+
+# ── API: Indicadores LOM ──────────────────────
+
+INDICADORES_VALIDOS = {"total_hablantes", "num_lom_distintas", "familia_dominante"}
+
+
+@app.get("/api/indicadores/{municipio_id}")
+async def get_indicadores(municipio_id: int):
+    """Devuelve los 3 indicadores de lenguas indígenas para un municipio."""
+    with get_conn() as conn:
+        row = conn.execute(
+            """SELECT m.nombre, e.nombre AS estado,
+                      i.total_hablantes, i.num_lom_distintas, i.familia_dominante
+               FROM indicadores_lom i
+               JOIN municipios m ON m.id = i.municipio_id
+               JOIN estados e ON e.id = m.estado_id
+               WHERE i.municipio_id = ?""",
+            (municipio_id,)
+        ).fetchone()
+    if not row:
+        return {"sin_datos": True, "municipio_id": municipio_id}
+    return row_to_dict(row)
+
+
+@app.get("/api/mapa/{indicador}")
+async def get_mapa_indicador(indicador: str):
+    """
+    Devuelve todos los municipios con su valor para el indicador solicitado.
+    indicador: total_hablantes | num_lom_distintas | familia_dominante
+    """
+    if indicador not in INDICADORES_VALIDOS:
+        return {"error": f"Indicador inválido. Opciones: {sorted(INDICADORES_VALIDOS)}"}
+
+    with get_conn() as conn:
+        rows = conn.execute(
+            f"""SELECT m.id, m.nombre, m.lat, m.lon,
+                       e.nombre AS estado, i.{indicador} AS valor
+                FROM indicadores_lom i
+                JOIN municipios m ON m.id = i.municipio_id
+                JOIN estados e ON e.id = m.estado_id""",
+        ).fetchall()
+    return [row_to_dict(r) for r in rows]
+
+==========================================
+=== 5. TEMPLATES/INDEX.HTML (rama feature/indicadores-lom) ===
+==========================================
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Mapa de México</title>
+
+  <!-- Leaflet CSS -->
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com"/>
+  <link href="https://fonts.googleapis.com/css2?family=Nunito+Sans:wght@300;400;600;700;800&display=swap" rel="stylesheet"/>
+
+  <style>
+    /* ═══════════════ RESET & BASE ═══════════════ */
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --verde:    #006847;
+      --verde-dk: #004d34;
+      --rojo:     #ce1126;
+      --azul:     #1a73e8;
+      --azul-lt:  #e8f0fe;
+      --gris-bg:  #f8f9fa;
+      --gris-brd: #e8eaed;
+      --gris-txt: #5f6368;
+      --negro:    #202124;
+      --blanco:   #ffffff;
+      --shadow-sm: 0 1px 3px rgba(0,0,0,.12), 0 1px 2px rgba(0,0,0,.10);
+      --shadow-md: 0 4px 12px rgba(0,0,0,.15);
+      --shadow-lg: 0 8px 24px rgba(0,0,0,.18);
+      --radius:   10px;
+      --sidebar-w: 380px;
+      --transition: .2s ease;
+    }
+
+    body {
+      font-family: 'Nunito Sans', Arial, sans-serif;
+      height: 100vh;
+      display: flex;
+      overflow: hidden;
+      background: #e5e3df;
+    }
+
+    /* ═══════════════ SIDEBAR ═══════════════ */
+    #sidebar {
+      width: var(--sidebar-w);
+      min-width: var(--sidebar-w);
+      display: flex;
+      flex-direction: column;
+      background: var(--blanco);
+      box-shadow: var(--shadow-lg);
+      z-index: 1000;
+      overflow: hidden;
+    }
+
+    /* Header */
+    #header {
+      background: linear-gradient(135deg, var(--verde) 0%, var(--verde-dk) 100%);
+      padding: 18px 20px 16px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      flex-shrink: 0;
+    }
+
+    #header .emoji { font-size: 30px; line-height: 1; }
+
+    #header-text h1 {
+      color: #fff;
+      font-size: 17px;
+      font-weight: 800;
+      letter-spacing: -.2px;
+    }
+
+    #header-text p {
+      color: rgba(255,255,255,.75);
+      font-size: 11.5px;
+      margin-top: 2px;
+    }
+
+    /* Controls */
+    #controls {
+      padding: 16px;
+      border-bottom: 1px solid var(--gris-brd);
+      flex-shrink: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    /* ── Search ── */
+    .field-label {
+      font-size: 10.5px;
+      font-weight: 700;
+      color: var(--gris-txt);
+      text-transform: uppercase;
+      letter-spacing: .6px;
+      margin-bottom: 5px;
+    }
+
+    .search-wrap { position: relative; }
+
+    #search-input {
+      width: 100%;
+      padding: 11px 42px 11px 14px;
+      border: 2px solid var(--gris-brd);
+      border-radius: var(--radius);
+      font-size: 14px;
+      font-family: inherit;
+      color: var(--negro);
+      background: var(--blanco);
+      outline: none;
+      transition: border-color var(--transition);
+    }
+
+    #search-input:focus  { border-color: var(--verde); }
+    #search-input::placeholder { color: #b0b4b8; }
+
+    .search-btn {
+      position: absolute;
+      right: 10px;
+      top: 50%;
+      transform: translateY(-50%);
+      background: none;
+      border: none;
+      cursor: pointer;
+      color: var(--gris-txt);
+      padding: 4px;
+      display: flex;
+      align-items: center;
+    }
+
+    /* Autocomplete */
+    #autocomplete-box {
+      position: absolute;
+      top: calc(100% + 6px);
+      left: 0; right: 0;
+      background: var(--blanco);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow-lg);
+      z-index: 999;
+      max-height: 300px;
+      overflow-y: auto;
+      display: none;
+      border: 1px solid var(--gris-brd);
+    }
+
+    #autocomplete-box.show { display: block; }
+
+    .ac-item {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 10px 14px;
+      cursor: pointer;
+      border-bottom: 1px solid #f1f3f4;
+      transition: background var(--transition);
+    }
+
+    .ac-item:last-child { border-bottom: none; }
+    .ac-item:hover { background: var(--gris-bg); }
+
+    .ac-icon {
+      width: 34px; height: 34px;
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 15px;
+      flex-shrink: 0;
+    }
+
+    .ac-icon.estado    { background: #e8f5e9; }
+    .ac-icon.municipio { background: var(--azul-lt); }
+
+    .ac-text .ac-nombre {
+      font-weight: 700;
+      font-size: 13.5px;
+      color: var(--negro);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+
+    .ac-text .ac-sub {
+      font-size: 11.5px;
+      color: var(--gris-txt);
+      margin-top: 1px;
+    }
+
+    .ac-empty {
+      padding: 20px 14px;
+      text-align: center;
+      color: var(--gris-txt);
+      font-size: 13px;
+    }
+
+    /* ── Divider ── */
+    .divider {
+      display: flex; align-items: center; gap: 8px;
+    }
+
+    .divider::before, .divider::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: var(--gris-brd);
+    }
+
+    .divider span {
+      font-size: 11px;
+      color: #9aa0a6;
+      white-space: nowrap;
+    }
+
+    /* ── Selects ── */
+    .select-wrap { position: relative; }
+
+    select {
+      width: 100%;
+      padding: 11px 36px 11px 14px;
+      border: 2px solid var(--gris-brd);
+      border-radius: var(--radius);
+      font-size: 13.5px;
+      font-family: inherit;
+      color: var(--negro);
+      background: var(--blanco);
+      outline: none;
+      appearance: none;
+      cursor: pointer;
+      transition: border-color var(--transition);
+    }
+
+    select:focus    { border-color: var(--verde); }
+    select:disabled { background: var(--gris-bg); color: #9aa0a6; cursor: default; }
+
+    .select-arrow {
+      position: absolute;
+      right: 12px;
+      top: 50%;
+      transform: translateY(-50%);
+      pointer-events: none;
+      color: var(--gris-txt);
+    }
+
+    /* ── Botón marcar ── */
+    #btn-marcar {
+      width: 100%;
+      padding: 12px;
+      background: var(--verde);
+      color: #fff;
+      border: none;
+      border-radius: var(--radius);
+      font-size: 14px;
+      font-weight: 700;
+      font-family: inherit;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      transition: background var(--transition), transform .1s;
+      letter-spacing: .1px;
+    }
+
+    #btn-marcar:hover:not(:disabled)  { background: var(--verde-dk); }
+    #btn-marcar:active:not(:disabled) { transform: scale(.98); }
+    #btn-marcar:disabled { background: #bdc1c6; cursor: default; }
+
+    /* ═══════════════ LISTA DE MARCADORES ═══════════════ */
+    #markers-wrap {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    #markers-header {
+      padding: 10px 16px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      background: var(--gris-bg);
+      border-bottom: 1px solid var(--gris-brd);
+      flex-shrink: 0;
+    }
+
+    #markers-count {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--gris-txt);
+      text-transform: uppercase;
+      letter-spacing: .5px;
+    }
+
+    #btn-limpiar {
+      font-size: 12px;
+      font-weight: 700;
+      font-family: inherit;
+      color: var(--rojo);
+      background: none;
+      border: none;
+      cursor: pointer;
+      padding: 5px 8px;
+      border-radius: 6px;
+      transition: background var(--transition);
+    }
+
+    #btn-limpiar:hover { background: #fce8e6; }
+
+    #markers-list {
+      flex: 1;
+      overflow-y: auto;
+    }
+
+    /* Scrollbar */
+    #markers-list::-webkit-scrollbar { width: 5px; }
+    #markers-list::-webkit-scrollbar-track { background: transparent; }
+    #markers-list::-webkit-scrollbar-thumb { background: #ddd; border-radius: 4px; }
+
+    .marker-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 11px 16px;
+      border-bottom: 1px solid #f1f3f4;
+      cursor: pointer;
+      transition: background var(--transition);
+    }
+
+    .marker-row:hover { background: var(--gris-bg); }
+
+    .marker-dot {
+      width: 12px; height: 12px;
+      border-radius: 50%;
+      flex-shrink: 0;
+      box-shadow: 0 0 0 3px rgba(0,0,0,.08);
+    }
+
+    .marker-info { flex: 1; min-width: 0; }
+
+    .marker-nombre {
+      font-weight: 700;
+      font-size: 13.5px;
+      color: var(--negro);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .marker-sub {
+      font-size: 11.5px;
+      color: var(--gris-txt);
+      margin-top: 2px;
+    }
+
+    .marker-coords {
+      font-size: 10px;
+      color: #9aa0a6;
+      font-family: monospace;
+      margin-top: 3px;
+    }
+
+    .btn-remove {
+      background: none;
+      border: none;
+      cursor: pointer;
+      color: #c5c8cc;
+      font-size: 16px;
+      padding: 4px 6px;
+      border-radius: 6px;
+      line-height: 1;
+      transition: color var(--transition), background var(--transition);
+      flex-shrink: 0;
+    }
+
+    .btn-remove:hover { color: var(--rojo); background: #fce8e6; }
+
+    /* Empty state */
+    .empty-state {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      padding: 50px 24px;
+      color: var(--gris-txt);
+      text-align: center;
+    }
+
+    .empty-icon {
+      font-size: 48px;
+      opacity: .35;
+      margin-bottom: 14px;
+    }
+
+    .empty-state h3 {
+      font-size: 14px;
+      font-weight: 700;
+      color: #9aa0a6;
+      margin-bottom: 6px;
+    }
+
+    .empty-state p {
+      font-size: 12.5px;
+      color: #b0b4b8;
+      line-height: 1.5;
+    }
+
+    /* ═══════════════ MAPA ═══════════════ */
+    #map {
+      flex: 1;
+      position: relative;
+    }
+
+    /* Leaflet popup custom */
+    .leaflet-popup-content-wrapper {
+      border-radius: 12px !important;
+      box-shadow: var(--shadow-lg) !important;
+      padding: 0 !important;
+      overflow: hidden;
+    }
+
+    .leaflet-popup-content {
+      margin: 0 !important;
+      line-height: 1 !important;
+    }
+
+    .leaflet-popup-tip-container { display: none; }
+
+    .popup-body {
+      padding: 14px 16px 12px;
+      font-family: 'Nunito Sans', Arial, sans-serif;
+      min-width: 180px;
+    }
+
+    .popup-tipo {
+      font-size: 10px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: .8px;
+      margin-bottom: 4px;
+    }
+
+    .popup-tipo.estado    { color: var(--verde); }
+    .popup-tipo.municipio { color: var(--azul); }
+
+    .popup-nombre {
+      font-size: 16px;
+      font-weight: 800;
+      color: var(--negro);
+      margin-bottom: 3px;
+    }
+
+    .popup-estado {
+      font-size: 12.5px;
+      color: var(--gris-txt);
+      margin-bottom: 8px;
+    }
+
+    .popup-coords {
+      font-size: 11px;
+      color: #9aa0a6;
+      font-family: monospace;
+      background: var(--gris-bg);
+      padding: 5px 8px;
+      border-radius: 6px;
+      display: inline-block;
+    }
+
+    /* Coordenadas en el mapa al hacer click */
+    .coords-popup .leaflet-popup-content-wrapper {
+      background: rgba(32,33,36,.85) !important;
+      color: #fff;
+      border-radius: 8px !important;
+    }
+
+    .coords-popup .leaflet-popup-content {
+      padding: 6px 10px;
+      font-size: 12px;
+      font-family: monospace;
+      color: #fff;
+    }
+
+    /* Loading spinner for dropdown */
+    #municipio-loading {
+      display: none;
+      font-size: 12px;
+      color: var(--gris-txt);
+      padding: 4px 0;
+      text-align: center;
+    }
+
+    #municipio-loading.show { display: block; }
+
+    /* Pill tag for tipo */
+    .tipo-pill {
+      display: inline-block;
+      font-size: 10px;
+      font-weight: 700;
+      padding: 2px 6px;
+      border-radius: 20px;
+      text-transform: uppercase;
+      letter-spacing: .4px;
+    }
+
+    .tipo-pill.estado    { background: #e8f5e9; color: var(--verde); }
+    .tipo-pill.municipio { background: var(--azul-lt); color: var(--azul); }
+  </style>
+</head>
+<body>
+
+<!-- ══════════════════ SIDEBAR ══════════════════ -->
+<div id="sidebar">
+
+  <!-- Header -->
+  <div id="header">
+    <div class="emoji">🇲🇽</div>
+    <div id="header-text">
+      <h1>Mapa de México</h1>
+      <p>32 estados · 2,469 municipios</p>
+    </div>
+  </div>
+
+  <!-- Controls -->
+  <div id="controls">
+
+    <!-- ─ Búsqueda rápida ─ -->
+    <div>
+      <div class="field-label">🔍 Búsqueda directa</div>
+      <div class="search-wrap">
+        <input
+          id="search-input"
+          type="text"
+          autocomplete="off"
+          placeholder="Escribe un estado o municipio…"
+        />
+        <button class="search-btn" tabindex="-1" onclick="limpiarBusqueda()">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="8"/><path d="M21 21l-4.35-4.35"/>
+          </svg>
+        </button>
+        <div id="autocomplete-box"></div>
+      </div>
+    </div>
+
+    <!-- Divisor -->
+    <div class="divider"><span>ó selecciona por nivel</span></div>
+
+    <!-- ─ Estado ─ -->
+    <div>
+      <div class="field-label">🏛 Estado</div>
+      <div class="select-wrap">
+        <select id="sel-estado">
+          <option value="">— Selecciona un Estado —</option>
+        </select>
+        <span class="select-arrow">
+          <svg width="12" height="8" viewBox="0 0 12 8">
+            <path fill="currentColor" d="M6 8L0 0h12z"/>
+          </svg>
+        </span>
+      </div>
+    </div>
+
+    <!-- ─ Municipio ─ -->
+    <div>
+      <div class="field-label">📍 Municipio</div>
+      <div class="select-wrap">
+        <select id="sel-municipio" disabled>
+          <option value="">— Primero selecciona un Estado —</option>
+        </select>
+        <span class="select-arrow">
+          <svg width="12" height="8" viewBox="0 0 12 8">
+            <path fill="currentColor" d="M6 8L0 0h12z"/>
+          </svg>
+        </span>
+      </div>
+      <div id="municipio-loading">Cargando municipios…</div>
+    </div>
+
+    <!-- ─ Botón marcar ─ -->
+    <button id="btn-marcar" disabled>
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+        <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/>
+        <circle cx="12" cy="9" r="2.5"/>
+      </svg>
+      Marcar en el Mapa
+    </button>
+
+  </div><!-- /controls -->
+
+
+  <!-- ─ Selector de indicador LOM ─ -->
+  <div id="lom-controls" style="padding:12px 16px;border-top:1px solid var(--border,#e5e7eb)">
+    <div class="field-label">🗣 Ver en el mapa</div>
+    <div class="select-wrap" style="margin-top:6px">
+      <select id="sel-indicador" onchange="cargarCapaLOM(this.value)">
+        <option value="">— Sin capa de lenguas —</option>
+        <option value="total_hablantes">Total de hablantes</option>
+        <option value="num_lom_distintas">Número de lenguas distintas</option>
+        <option value="familia_dominante">Familia lingüística dominante</option>
+      </select>
+      <span class="select-arrow">
+        <svg width="12" height="8" viewBox="0 0 12 8">
+          <path fill="currentColor" d="M6 8L0 0h12z"/>
+        </svg>
+      </span>
+    </div>
+  </div>
+
+  <!-- Lista de marcadores -->
+  <div id="markers-wrap">
+    <div id="markers-header">
+      <span id="markers-count">MARCADORES (0)</span>
+      <button id="btn-limpiar" onclick="limpiarTodo()">🗑 Limpiar todo</button>
+    </div>
+    <div id="markers-list">
+      <!-- populated by JS -->
+    </div>
+  </div>
+
+</div><!-- /sidebar -->
+
+
+<!-- ══════════════════ TABLA LOM ══════════════════ -->
+<div id="tabla-lom-wrap" style="display:none;position:fixed;bottom:0;left:380px;right:0;
+     background:#fff;border-top:2px solid #1e88e5;z-index:1000;max-height:220px;overflow-y:auto">
+  <div style="display:flex;align-items:center;justify-content:space-between;
+              padding:8px 16px;background:#1e88e5;color:#fff">
+    <strong>Municipios seleccionados — lenguas indígenas</strong>
+    <button onclick="document.getElementById('tabla-lom-wrap').style.display='none'"
+            style="background:none;border:none;color:#fff;font-size:18px;cursor:pointer">✕</button>
+  </div>
+  <table id="tabla-lom" style="width:100%;border-collapse:collapse;font-size:13px">
+    <thead style="background:#f3f4f6;position:sticky;top:0">
+      <tr>
+        <th style="padding:6px 12px;text-align:left">Municipio</th>
+        <th style="padding:6px 12px;text-align:left">Estado</th>
+        <th style="padding:6px 12px;text-align:right">Hablantes</th>
+        <th style="padding:6px 12px;text-align:right"># Lenguas</th>
+        <th style="padding:6px 12px;text-align:left">Familia dominante</th>
+      </tr>
+    </thead>
+    <tbody id="tabla-lom-body"></tbody>
+  </table>
+</div>
+
+<!-- ══════════════════ MAPA ══════════════════ -->
+<div id="map"></div>
+
+
+<!-- ══════════════════ SCRIPTS ══════════════════ -->
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+/* ══════════════════════════════════════════
+   MAPA – Inicialización
+══════════════════════════════════════════ */
+const map = L.map('map', { zoomControl: false })
+             .setView([23.6345, -102.5528], 5);
+
+L.control.zoom({ position: 'topright' }).addTo(map);
+
+// Tile layer limpio (tipo Google Maps)
+L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png', {
+  attribution: '© <a href="https://www.openstreetmap.org/">OpenStreetMap</a> © <a href="https://carto.com/">CARTO</a>',
+  maxZoom: 19
+}).addTo(map);
+
+/* ══════════════════════════════════════════
+   ESTADO GLOBAL
+══════════════════════════════════════════ */
+const MARKERS = {};       // key → { marker, data, color }
+let   colorIdx = 0;
+let   selectedLoc = null; // ubicación lista para marcar
+
+const PALETTE = [
+  '#e53935','#8e24aa','#1e88e5','#00897b','#f4511e',
+  '#6d4c41','#039be5','#43a047','#fdd835','#d81b60',
+  '#00acc1','#7cb342','#fb8c00','#5e35b1','#c0ca33'
+];
+
+function nextColor() {
+  return PALETTE[(colorIdx++) % PALETTE.length];
+}
+
+/* ══════════════════════════════════════════
+   ICONO DE MARCADOR SVG personalizado
+══════════════════════════════════════════ */
+function markerIcon(color) {
+  return L.divIcon({
+    className: '',
+    html: `<svg width="30" height="42" viewBox="0 0 30 42" xmlns="http://www.w3.org/2000/svg">
+      <filter id="s"><feDropShadow dx="0" dy="2" stdDeviation="2" flood-opacity=".35"/></filter>
+      <path d="M15 0C6.72 0 0 6.72 0 15c0 10.5 15 27 15 27S30 25.5 30 15C30 6.72 23.28 0 15 0z"
+            fill="${color}" filter="url(#s)"/>
+      <circle cx="15" cy="15" r="7" fill="white" opacity=".95"/>
+    </svg>`,
+    iconSize:   [30, 42],
+    iconAnchor: [15, 42],
+    popupAnchor:[0, -44]
+  });
+}
+
+/* ══════════════════════════════════════════
+   CARGAR ESTADOS AL INICIAR
+══════════════════════════════════════════ */
+async function cargarEstados() {
+  const res    = await fetch('/api/estados');
+  const estados = await res.json();
+  const sel    = document.getElementById('sel-estado');
+
+  estados.forEach(e => {
+    const opt = document.createElement('option');
+    opt.value        = e.id;
+    opt.textContent  = e.nombre;
+    opt.dataset.lat  = e.lat;
+    opt.dataset.lon  = e.lon;
+    sel.appendChild(opt);
+  });
+}
+
+/* ══════════════════════════════════════════
+   EVENTO: Cambio de Estado
+══════════════════════════════════════════ */
+document.getElementById('sel-estado').addEventListener('change', async function () {
+  const munSel   = document.getElementById('sel-municipio');
+  const loading  = document.getElementById('municipio-loading');
+  const btn      = document.getElementById('btn-marcar');
+
+  // Limpiar municipio y botón
+  munSel.innerHTML = '<option value="">— Cargando... —</option>';
+  munSel.disabled  = true;
+  btn.disabled     = true;
+  selectedLoc      = null;
+
+  if (!this.value) {
+    munSel.innerHTML = '<option value="">— Primero selecciona un Estado —</option>';
+    return;
+  }
+
+  // Volar al estado
+  const opt = this.options[this.selectedIndex];
+  map.flyTo([parseFloat(opt.dataset.lat), parseFloat(opt.dataset.lon)], 7,
+            { animate: true, duration: .9 });
+
+  // Cargar municipios
+  loading.classList.add('show');
+  const res  = await fetch(`/api/municipios/${this.value}`);
+  const muns = await res.json();
+  loading.classList.remove('show');
+
+  munSel.innerHTML = `<option value="">— Selecciona un Municipio (${muns.length}) —</option>`;
+  muns.forEach(m => {
+    const o = document.createElement('option');
+    o.value       = m.id;
+    o.textContent = m.nombre;
+    o.dataset.lat = m.lat;
+    o.dataset.lon = m.lon;
+    munSel.appendChild(o);
+  });
+
+  munSel.disabled = false;
+});
+
+/* ══════════════════════════════════════════
+   EVENTO: Cambio de Municipio
+══════════════════════════════════════════ */
+document.getElementById('sel-municipio').addEventListener('change', function () {
+  const btn = document.getElementById('btn-marcar');
+
+  if (!this.value) {
+    btn.disabled = true;
+    selectedLoc  = null;
+    return;
+  }
+
+  const mOpt  = this.options[this.selectedIndex];
+  const eSel  = document.getElementById('sel-estado');
+  const eNom  = eSel.options[eSel.selectedIndex].textContent;
+
+  selectedLoc = {
+    key:    `mun-${this.value}`,
+    id:     parseInt(this.value),
+    nombre: mOpt.textContent,
+    lat:    parseFloat(mOpt.dataset.lat),
+    lon:    parseFloat(mOpt.dataset.lon),
+    tipo:   'municipio',
+    estado: eNom
+  };
+
+  // Volar al municipio
+  map.flyTo([selectedLoc.lat, selectedLoc.lon], 11,
+            { animate: true, duration: .75 });
+
+  btn.disabled = false;
+});
+
+/* ══════════════════════════════════════════
+   EVENTO: Botón "Marcar en el Mapa"
+══════════════════════════════════════════ */
+document.getElementById('btn-marcar').addEventListener('click', () => {
+  if (!selectedLoc) return;
+  agregarMarcador(selectedLoc);
+  // reset municipio select
+  document.getElementById('sel-municipio').value = '';
+  document.getElementById('btn-marcar').disabled = true;
+  selectedLoc = null;
+});
+
+/* ══════════════════════════════════════════
+   BÚSQUEDA CON AUTOCOMPLETADO
+══════════════════════════════════════════ */
+let searchTimer;
+const searchInput = document.getElementById('search-input');
+const acBox       = document.getElementById('autocomplete-box');
+
+searchInput.addEventListener('input', () => {
+  clearTimeout(searchTimer);
+  const q = searchInput.value.trim();
+  if (q.length < 2) { acBox.classList.remove('show'); return; }
+  searchTimer = setTimeout(() => buscar(q), 240);
+});
+
+searchInput.addEventListener('focus', () => {
+  const q = searchInput.value.trim();
+  if (q.length >= 2) acBox.classList.add('show');
+});
+
+searchInput.addEventListener('keydown', e => {
+  if (e.key === 'Escape') acBox.classList.remove('show');
+});
+
+document.addEventListener('click', e => {
+  if (!e.target.closest('.search-wrap')) acBox.classList.remove('show');
+});
+
+async function buscar(q) {
+  const res     = await fetch(`/api/buscar?q=${encodeURIComponent(q)}&limite=20`);
+  const results = await res.json();
+
+  acBox.innerHTML = '';
+
+  if (!results.length) {
+    acBox.innerHTML = `<div class="ac-empty">Sin resultados para "<b>${q}</b>"</div>`;
+  } else {
+    results.forEach(r => {
+      const item = document.createElement('div');
+      item.className = 'ac-item';
+      item.innerHTML = `
+        <div class="ac-icon ${r.tipo}">${r.tipo === 'estado' ? '🏛' : '📍'}</div>
+        <div class="ac-text" style="min-width:0;flex:1">
+          <div class="ac-nombre">${destacar(r.nombre, q)}</div>
+          <div class="ac-sub">${r.subtitulo}</div>
+        </div>
+        <span class="tipo-pill ${r.tipo}">${r.tipo}</span>
+      `;
+      item.addEventListener('mousedown', e => { e.preventDefault(); seleccionarDeResultado(r); });
+      acBox.appendChild(item);
+    });
+  }
+
+  acBox.classList.add('show');
+}
+
+function destacar(texto, q) {
+  const re = new RegExp(`(${q.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')})`, 'gi');
+  return texto.replace(re, '<mark style="background:#fff9c4;border-radius:2px;padding:0 1px">$1</mark>');
+}
+
+function seleccionarDeResultado(r) {
+  acBox.classList.remove('show');
+  searchInput.value = '';
+
+  const loc = {
+    key:    `${r.tipo}-${r.id}`,
+    id:     r.id,
+    nombre: r.nombre,
+    lat:    r.lat,
+    lon:    r.lon,
+    tipo:   r.tipo,
+    estado: r.subtitulo !== 'Estado' ? r.subtitulo : ''
+  };
+
+  const zoom = r.tipo === 'estado' ? 7 : 11;
+  map.flyTo([loc.lat, loc.lon], zoom, { animate: true, duration: .8 });
+  agregarMarcador(loc);
+}
+
+function limpiarBusqueda() {
+  searchInput.value = '';
+  acBox.classList.remove('show');
+  searchInput.focus();
+}
+
+/* ══════════════════════════════════════════
+   AGREGAR MARCADOR
+══════════════════════════════════════════ */
+function agregarMarcador(loc) {
+  // Si ya existe, solo volar y abrir popup
+  if (MARKERS[loc.key]) {
+    map.flyTo([loc.lat, loc.lon], 11);
+    MARKERS[loc.key].marker.openPopup();
+    return;
+  }
+
+  const color  = nextColor();
+  const icon   = markerIcon(color);
+  const marker = L.marker([loc.lat, loc.lon], { icon })
+                  .addTo(map)
+                  .bindPopup(popupHTML(loc), { maxWidth: 260 })
+                  .openPopup();
+
+  MARKERS[loc.key] = { marker, data: loc, color };
+  renderLista();
+}
+
+function popupHTML(loc) {
+  const sub = loc.tipo === 'municipio' ? loc.estado : 'Estado';
+  return `<div class="popup-body">
+    <div class="popup-tipo ${loc.tipo}">${loc.tipo}</div>
+    <div class="popup-nombre">${loc.nombre}</div>
+    ${sub ? `<div class="popup-estado">${sub}</div>` : ''}
+    <div class="popup-coords">📍 ${loc.lat.toFixed(5)}, ${loc.lon.toFixed(5)}</div>
+  </div>`;
+}
+
+/* ══════════════════════════════════════════
+   ELIMINAR MARCADOR
+══════════════════════════════════════════ */
+function eliminarMarcador(key) {
+  if (!MARKERS[key]) return;
+  map.removeLayer(MARKERS[key].marker);
+  delete MARKERS[key];
+  renderLista();
+}
+
+/* ══════════════════════════════════════════
+   LIMPIAR TODO
+══════════════════════════════════════════ */
+function limpiarTodo() {
+  Object.values(MARKERS).forEach(m => map.removeLayer(m.marker));
+  for (const k in MARKERS) delete MARKERS[k];
+  colorIdx = 0;
+  renderLista();
+}
+
+/* ══════════════════════════════════════════
+   RENDER LISTA DE MARCADORES
+══════════════════════════════════════════ */
+function renderLista() {
+  const lista = document.getElementById('markers-list');
+  const count = document.getElementById('markers-count');
+  const keys  = Object.keys(MARKERS);
+
+  count.textContent = `MARCADORES (${keys.length})`;
+
+  if (!keys.length) {
+    lista.innerHTML = `
+      <div class="empty-state">
+        <div class="empty-icon">🗺</div>
+        <h3>Sin marcadores aún</h3>
+        <p>Busca un lugar o selecciona<br>estado + municipio para marcarlo</p>
+      </div>`;
+    return;
+  }
+
+  lista.innerHTML = keys.map(key => {
+    const { data, color } = MARKERS[key];
+    const sub = data.tipo === 'municipio' ? data.estado : 'Estado';
+    return `
+      <div class="marker-row" onclick="irA('${key}')">
+        <div class="marker-dot" style="background:${color}"></div>
+        <div class="marker-info">
+          <div class="marker-nombre">${data.nombre}</div>
+          <div class="marker-sub">${sub || ''}</div>
+          <div class="marker-coords">${data.lat.toFixed(5)}, ${data.lon.toFixed(5)}</div>
+        </div>
+        <button class="btn-remove" onclick="event.stopPropagation();eliminarMarcador('${key}')"
+                title="Eliminar marcador">✕</button>
+      </div>`;
+  }).join('');
+}
+
+function irA(key) {
+  if (!MARKERS[key]) return;
+  const { data, marker } = MARKERS[key];
+  map.flyTo([data.lat, data.lon], 11, { animate: true, duration: .75 });
+  marker.openPopup();
+}
+
+/* ══════════════════════════════════════════
+   CLICK EN EL MAPA – mostrar coordenadas
+══════════════════════════════════════════ */
+map.on('click', e => {
+  L.popup({ className: 'coords-popup' })
+   .setLatLng(e.latlng)
+   .setContent(`📍 ${e.latlng.lat.toFixed(6)}, ${e.latlng.lng.toFixed(6)}`)
+   .openOn(map);
+});
+
+/* ══════════════════════════════════════════
+   INIT
+══════════════════════════════════════════ */
+cargarEstados();
+renderLista();
+
+/* ══════════════════════════════════════════
+   CAPA LOM – Indicadores de lenguas indígenas
+══════════════════════════════════════════ */
+
+const FAMILIAS_COLOR = {
+  'Maya':              '#2e7d32',
+  'Yuto-nahua':        '#1565c0',
+  'Oto-mangue':        '#6a1b9a',
+  'Mixe-zoque':        '#e65100',
+  'Totonaco-tepehua':  '#ad1457',
+  'Álgica':            '#00838f',
+  'Cochimí-yumana':    '#558b2f',
+  'Seri':              '#4527a0',
+  'Tarasca':           '#f9a825',
+  'Chontal-oaxaca':    '#4e342e',
+  'Huave':             '#00695c',
+  'Otras / no especificado': '#757575',
+};
+
+let capaLOM = null;
+const municipiosEnTabla = new Set();
+
+function colorPorValor(indicador, valor) {
+  if (indicador === 'familia_dominante') {
+    return FAMILIAS_COLOR[valor] || '#9e9e9e';
+  }
+  const n = Number(valor) || 0;
+  if (n === 0)      return '#e0e0e0';
+  if (n < 500)      return '#c8e6c9';
+  if (n < 2000)     return '#81c784';
+  if (n < 10000)    return '#388e3c';
+  if (n < 50000)    return '#1b5e20';
+  return '#003300';
+}
+
+async function cargarCapaLOM(indicador) {
+  if (capaLOM) { map.removeLayer(capaLOM); capaLOM = null; }
+  if (!indicador) return;
+
+  const datos = await fetch('/api/mapa/' + indicador).then(r => r.json());
+  const marcadores = datos.map(d => {
+    const color = colorPorValor(indicador, d.valor);
+    const radio = indicador === 'familia_dominante' ? 5
+                : Math.max(3, Math.min(14, Math.log10((Number(d.valor)||0) + 1) * 3));
+    const m = L.circleMarker([d.lat, d.lon], {
+      radius: radio, color: color, fillColor: color,
+      fillOpacity: 0.75, weight: 0.5
+    });
+    m.bindTooltip(`<b>${d.nombre}</b><br>${d.estado}<br>${indicador === 'familia_dominante' ? d.valor : Number(d.valor).toLocaleString()}`);
+    m.on('click', () => agregarATablaLOM(d.id));
+    return m;
+  });
+  capaLOM = L.layerGroup(marcadores).addTo(map);
+}
+
+async function agregarATablaLOM(municipioId) {
+  if (municipiosEnTabla.has(municipioId)) return;
+  const info = await fetch('/api/indicadores/' + municipioId).then(r => r.json());
+  if (info.sin_datos) return;
+
+  municipiosEnTabla.add(municipioId);
+  const tbody = document.getElementById('tabla-lom-body');
+  const tr = document.createElement('tr');
+  tr.style.borderTop = '1px solid #e5e7eb';
+  tr.innerHTML = `
+    <td style="padding:6px 12px">${info.nombre}</td>
+    <td style="padding:6px 12px">${info.estado}</td>
+    <td style="padding:6px 12px;text-align:right">${Number(info.total_hablantes).toLocaleString()}</td>
+    <td style="padding:6px 12px;text-align:right">${info.num_lom_distintas}</td>
+    <td style="padding:6px 12px">${info.familia_dominante || '—'}</td>`;
+  tbody.appendChild(tr);
+  document.getElementById('tabla-lom-wrap').style.display = 'block';
+}
+
+
+</script>
+</body>
+</html>
+
+==========================================
+=== 6. README.MD (rama feature/indicadores-lom) ===
+==========================================
+# Mapa de México 🇲🇽
+
+Aplicación web interactiva para visualizar y explorar los 32 estados y más de 2,400 municipios de México en un mapa.
+
+## Características
+
+- 🗺️ Mapa interactivo con Folium
+- 🔍 Búsqueda directa de estados y municipios
+- 📍 Marcadores con coordenadas precisas
+- 🏛️ Selección por estado y municipio
+- 📱 Diseño responsivo
+
+## Instalación y ejecución
+
+```bash
+git clone https://github.com/saulsantibanezm/mapa-mexico.git
+cd mapa-mexico
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+python -m uvicorn main:app --reload
+
+==========================================
+=== 7. REQUIREMENTS.TXT (rama feature/indicadores-lom) ===
+==========================================
+fastapi==0.115.0
+uvicorn==0.30.0
+jinja2==3.1.4
+
+==========================================
+=== 8. ESQUEMA DE LA BASE DE DATOS ===
+==========================================
+
+Command 'sqlite3' not found, but can be installed with:
+
+apt install sqlite3
+
+Please ask your administrator.
+
+==========================================
+=== 9. CONTEO DE REGISTROS EN LA DB ===
+==========================================
+
+Command 'sqlite3' not found, but can be installed with:
+
+apt install sqlite3
+
+Please ask your administrator.
+
+==========================================
+=== 10. PRIMEROS 5 REGISTROS DE INDICADORES_LOM ===
+==========================================
+
+Command 'sqlite3' not found, but can be installed with:
+
+apt install sqlite3
+
+Please ask your administrator.
+
+==========================================
+=== 11. TOP 5 MUNICIPIOS CON MÁS HABLANTES ===
+==========================================
+
+Command 'sqlite3' not found, but can be installed with:
+
+apt install sqlite3
+
+Please ask your administrator.
+
+==========================================
+=== 12. DISTRIBUCIÓN POR FAMILIA LINGÜÍSTICA ===
+==========================================
+
+Command 'sqlite3' not found, but can be installed with:
+
+apt install sqlite3
+
+Please ask your administrator.
+
+==========================================
+=== 13. ESTADO DE GIT ===
+==========================================
+On branch feature/indicadores-lom
+Changes not staged for commit:
+  (use "git add <file>..." to update what will be committed)
+  (use "git restore <file>..." to discard changes in working directory)
+	modified:   municipios.db
+	modified:   templates/index.html
+
+Untracked files:
+  (use "git add <file>..." to include in what will be committed)
+	analisis_repo.txt
+	data/
+
+no changes added to commit (use "git add" and/or "git commit -a")
+* feature/indicadores-lom
+  main
+  remotes/origin/HEAD -> origin/main
+  remotes/origin/feature/indicadores-lom
+  remotes/origin/main
+origin	git@github.com:saulsantibanezm/mapa-mexico.git (fetch)
+origin	git@github.com:saulsantibanezm/mapa-mexico.git (push)
+
+==========================================
+=== 14. ÁRBOL DE COMMITS ===
+==========================================
+* 53b38c1 (HEAD -> feature/indicadores-lom, origin/feature/indicadores-lom) feat: integrar indicadores de lenguas indígenas (Censo INEGI 2020)
+* f36fe6c (origin/main, origin/HEAD, main) Limpieza: eliminar columna poblacion y dependencias obsoletas
+* e8d7f59 Agregar archivo Excel con coordenadas
+* def60fb Eliminar archivos temporales de SQLite
+* a03a016 Actualiza backend a API JSON, corrige coordenadas y bug de maxZoom
+* 8774224 Limpiar archivos temporales y actualizar .gitignore
+* 30dee29 Versión 1.0: Mapa interactivo de México
+
+=== FIN DEL ANÁLISIS ===

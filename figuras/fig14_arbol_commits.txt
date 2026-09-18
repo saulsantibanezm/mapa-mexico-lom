@@ -1,0 +1,7 @@
+* 53b38c1 (HEAD -> feature/indicadores-lom, origin/feature/indicadores-lom) feat: integrar indicadores de lenguas indígenas (Censo INEGI 2020)
+* f36fe6c (origin/main, origin/HEAD, main) Limpieza: eliminar columna poblacion y dependencias obsoletas
+* e8d7f59 Agregar archivo Excel con coordenadas
+* def60fb Eliminar archivos temporales de SQLite
+* a03a016 Actualiza backend a API JSON, corrige coordenadas y bug de maxZoom
+* 8774224 Limpiar archivos temporales y actualizar .gitignore
+* 30dee29 Versión 1.0: Mapa interactivo de México
