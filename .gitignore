@@ -48,3 +48,10 @@ desktop.ini
 # Archivos de bloqueo de Excel
 ~.xlsx
 .~lock.*.xlsx#
+data/raw/Personas00.CSV
+*.CSV
+data/raw/
+municipios.db
+*.db
+data/raw/
+*.db
